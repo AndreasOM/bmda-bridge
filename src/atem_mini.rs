@@ -23,18 +23,18 @@ const PACKET_BUFFER_SIZE: usize = 96;
 #[derive(Debug, Default)]
 struct Connection {
 	sock:		Option< UdpSocket >,
-	sessionId:	u16,
+	session_id:	u16,
 	localId:	u16,
 	remoteId:	u16,
 	package_id: u16,
 }
 
 impl Connection {
-	pub fn setSessionId(&mut self, sessionId: u16) {
-		self.sessionId = sessionId;
+	pub fn set_session_id(&mut self, session_id: u16) {
+		self.session_id = session_id;
 	}
-	pub fn sessionId( &self ) -> u16 {
-		self.sessionId
+	pub fn session_id( &self ) -> u16 {
+		self.session_id
 	}
 	pub fn localId( &self ) -> u16 {
 		self.localId
@@ -103,13 +103,18 @@ impl AtemMini {
 								println!("Sending Hello");
 								let c = AtemCommand::create_hello();
 								let buf = c.buffer();
-//								println!("{:?}", &buf[..20]);
+								println!("{:?}", &buf);
 								let len = socket.send(&buf[..20]).await?;
 //								println!("{:?} bytes sent", len);
 							},
 							Command::Ack( session_id, remote_id ) => {
+								/*
 								let package_id = connection.package_id;
 								connection.package_id += 1;
+								*/
+								let package_id = 0;
+								// :HACK
+								connection.session_id = session_id;
 //								println!("Sending Ack for session {}, remote {}", session_id, remote_id);
 								let c = AtemCommand::create_ack( package_id, session_id, remote_id );
 								let buf = c.buffer();
@@ -122,6 +127,25 @@ impl AtemMini {
 							}
 							Command::AtemCommand( ac ) => {
 								println!("Sending AtemCommand");
+							},
+							Command::RunMacro( index ) => {
+								println!("Running Macro {} - {} / {}", index, connection.session_id, connection.package_id);
+								connection.package_id += 1;
+								let package_id = connection.package_id;
+								let session_id = connection.session_id;
+								let mut c = AtemCommand::create_command( package_id, session_id, b"MAct", 4);
+								c.payload().set( 1, index );
+								c.update_buffer();
+								println!("{:?}", &c.buffer());
+								let len = socket.send(&c.buffer()).await?;
+/*
+    QByteArray cmd("MAct");
+    QByteArray payload(4, 0x0);
+
+    payload[1] = static_cast<char>(macroIndex);
+
+    sendCommand(cmd, payload);
+*/
 							},
 						}
 					},
@@ -178,6 +202,15 @@ impl AtemMini {
 		true
 	}
 
+	pub fn run_macro( &mut self, index: u8 ) {
+		if let Some( tx ) = &mut self.request_tx {
+			let cmd = Command::RunMacro( index );
+			match tx.send(cmd) {
+				Ok( _ ) => {},
+				Err( _ ) => {},
+			}
+		}		
+	}
 	pub fn update( &mut self ) {
 		let max_responses = 10;
 		if let Some( response_rx ) = &self.response_rx {
@@ -213,6 +246,10 @@ impl AtemMini {
 									Err( _ ) => {},
 								}
 							}
+						} else if c.header().is_ack() {
+							println!("ACK! for {}", c.header().ack_id());
+						} else if c.header().is_request_next() {
+							println!("REQUEST NEXT! for {}", c.header().resend_id());
 						} else {
 							if let Some( tx ) = &mut self.request_tx {
 								let cmd = Command::Shutdown;

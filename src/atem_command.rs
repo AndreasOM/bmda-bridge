@@ -18,6 +18,7 @@ pub struct AtemCommandHeader {
 	len:	u16,
 	session_id:	u16,
 	ack_id:	u16,
+	resend_id:	u16,
 	package_id: u16,
 	dirty:	bool,
 	buffer: [u8;SIZE_OF_HEADER],
@@ -32,6 +33,7 @@ impl AtemCommandHeader {
 		h.len = ( ( ( buffer[ 0 ] & 0x03 ) as u16 ) << 8 ) | ( buffer[1] as u16 ) - SIZE_OF_HEADER as u16;
 		h.session_id = ( ( buffer[2] as u16 ) << 8 ) | ( buffer[3] as u16 );
 		h.ack_id = ( ( buffer[4] as u16 ) << 8 ) | ( buffer[5] as u16 );
+		h.resend_id = ( ( buffer[6] as u16 ) << 8 ) | ( buffer[7] as u16 );
 		h.package_id = ( ( buffer[10] as u16 ) << 8 ) | ( buffer[11] as u16 );
 
 		// :TODO: error checking
@@ -53,11 +55,20 @@ impl AtemCommandHeader {
 	pub fn is_ack_request(&self) -> bool {
 		self.cmd & COMMAND_MASK_ACK_REQUEST > 0
 	}
+	pub fn is_request_next(&self) -> bool {
+		self.cmd & COMMAND_MASK_REQUEST_NEXT > 0
+	}
 	pub fn session_id(&self) -> u16 {
 		self.session_id
 	}
 	pub fn package_id(&self) -> u16 {
 		self.package_id
+	}
+	pub fn ack_id(&self) -> u16 {
+		self.ack_id
+	}
+	pub fn resend_id(&self) -> u16 {
+		self.resend_id
 	}
 	pub fn len(&self) -> u16 {
 		self.len
@@ -218,7 +229,7 @@ const IGNORED_CHUNKS: &'static[ &str ] = &[
 	"TlSr",	// tally state? !
 	"TlFc",
 
-	"MRPr",	// macro run?
+//	"MRPr",	// macro run?
 	"MRcS",	// macro recording?
 
 	"CCst",
@@ -410,7 +421,7 @@ impl AtemCommandPayload {
 						String::from_utf8_lossy( &[] )
 					};
 					if u > 0 {
-						println!("Macro: {}\n{}", name, body);
+						println!("Macro: {:>4} {}\n{}", i, name, body);
 					}
 		    	},
 		    	"VidM" => {
@@ -432,10 +443,16 @@ impl AtemCommandPayload {
 		    		let l = ( l as f32 ) / 1000.0;
 
 		    		println!("Col Gen: {} -> {}/{}/{}", i, h, s, l);
-		    	}
+		    	},
+		    	"MRPr" => {
+		    		let s = chunk[ 6 ];
+		    		let r = chunk[ 7 ];
+		    		let m = chunk[ 9 ];
+		    		println!("Macro Running: {} -> {}/{}", m, s, r);
+		    	},
 		    	o => {
 		    		if IGNORED_CHUNKS.contains( &o ) {
-
+//		    			print!("{} ", &o);
 		    		} else {
 		    			println!("Unhandled chunk type: {:?}", o );
 		    		}
@@ -473,8 +490,10 @@ impl AtemCommandPayload {
 pub struct AtemCommand {
 	header:		AtemCommandHeader,
 	payload:	AtemCommandPayload,
+	cmd:		Option< [u8;4] >,
 	buffer:		Vec::< u8 >,
 	dirty:		bool,
+	fill_hack:	bool,
 }
 
 impl Default for AtemCommand {
@@ -482,8 +501,10 @@ impl Default for AtemCommand {
 		Self {
 			header:		AtemCommandHeader::default(),
 			payload: 	AtemCommandPayload::default(),
+			cmd:		None,
 			buffer:		Vec::new(),
 			dirty:		false,
+			fill_hack:	false,
 		}
 	}
 }
@@ -532,6 +553,22 @@ impl AtemCommand {
 							ac.payload = p;
 						}
 						Some( ac )
+					} else if h.is_ack() {
+						println!("Got ACK. Length {}", plen);
+						let mut ac = AtemCommand::default();
+						ac.header = h;
+						if let Some( p ) = p {
+							ac.payload = p;
+						}
+						Some( ac )
+					} else if h.is_request_next() {
+						println!("Got REQUEST_NEXT. Length {}", plen);
+						let mut ac = AtemCommand::default();
+						ac.header = h;
+						if let Some( p ) = p {
+							ac.payload = p;
+						}
+						Some( ac )
 					} else {
 						println!("Unhandled command {:#02x}", h.cmd() );
 						None
@@ -546,6 +583,10 @@ impl AtemCommand {
 
 	pub fn header( &self ) -> &AtemCommandHeader {
 		&self.header
+	}
+
+	pub fn payload( &mut self ) -> &mut AtemCommandPayload {
+		&mut self.payload
 	}
 
 	fn set_payload_len( &mut self, len: u16 ) {
@@ -578,10 +619,44 @@ impl AtemCommand {
 		s.update_buffer();
 		s
 	}
+
+	pub fn create_command( package_id: u16, session_id: u16, cmd: &[u8;4], len: u16 ) -> AtemCommand {
+		let mut s = Self::default();
+//		s.set_payload_len( len + cmd.len() as u16 + 4 );
+		s.set_payload_len( len + 4 + 4 );
+		s.header.set_command( COMMAND_MASK_ACK_REQUEST );
+		s.header.set_package_id( package_id );
+		s.header.set_session_id( session_id );
+		s.cmd = Some( *cmd );
+		s.fill_hack = false;
+		s
+	}
+// [16, 20, 0, 0, 0, 0, 0, 0, 0, 58, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+// [16, 20, 0, 0, 0, 0, 0, 0, 0, 58, 0, 0, 0, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+// [16, 20, 0, 0, 0, 0, 0, 0, 0, 58, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+
+// [8, 24, 129, 45, 0, 0, 0, 0, 0, 0, 0, 49,/*<h p>*/ 0, 12, 0, 0, 77, 65, 99, 116, 0, 0, 0, 0]
+// [8, 24, 129, 55, 0, 0, 0, 0, 0, 0, 0, 53,          0, 12, 0, 0, 77, 65, 99, 116, 0, 1, 0, 0]
 	pub fn update_buffer( &mut self ) {
 		self.header.update_buffer();
 		self.payload.update_buffer();
-		let b = [self.header.buffer(), self.payload.buffer()].concat();
+		let s = self.header.len();
+		/*
+		let m = if self.fill_hack {
+			[ ( s>>8 ) as u8, ( s & 0xff ) as u8, 0, 0 ].to_vec()
+		} else {
+			[].to_vec()
+		};
+		*/
+		let mut l = self.payload().buffer().len();
+		
+		let cmd = if let Some( cmd ) = &self.cmd {
+			l -= 8;
+			[[ ( s>>8 ) as u8, ( s & 0xff ) as u8, 0, 0 ], *cmd].concat().to_vec()
+		} else {
+			[].to_vec()	
+		};
+		let b = [self.header.buffer(), /*&m,*/ &cmd, &self.payload.buffer()[..l]].concat();
 		self.buffer = b;
 		self.dirty = false;
 	}
@@ -600,266 +675,6 @@ pub enum Command {
 	Hello,
 	Ack( u16, u16 ),
 	AtemCommand( AtemCommand ),
+	RunMacro( u8 ),
 	Shutdown,
 }
-
-/*
-	fn createHeader( &mut self, cmd: AtemCommand, len: u16, remoteId: u16 ) -> [u8; PACKET_BUFFER_SIZE] {
-		let cmd_code = cmd.id() as u8;
-		let mut buf =[0; PACKET_BUFFER_SIZE];
-
-		let hsb = ( len >> 8 ) as u8;
-		let lsb = ( len & 0xff ) as u8;
-		buf[ 0 ] = ( cmd_code << 3 ) | ( hsb & 0x07 );
-		buf[ 1 ] = lsb;
-
-		buf[ 2 ] = 0; // session ID / uID
-		buf[ 3 ] = 0;
-
-		buf[ 4 ] = 0; // remote ID / ack ID
-		buf[ 5 ] = 0;
-
-		buf[ 10 ] = 0; // package ID
-		buf[ 11 ] = 0;
-
-		if ![ AtemCommand::Hello ].contains( &cmd ) {
-
-		}
-		buf
-	}
-
-*/
-
-/*
-#[derive(Copy,Clone,Debug,PartialEq)]
-pub enum AtemCommand {
-	Hello,
-	Ack {
-		magic: u8,
-	},
-}
-
-#[derive(Copy,Clone,Debug,PartialEq)]
-pub enum AtemResponse {
-	Hello{
-		session_id: u16,
-		remote_id:	u16,
-	}
-}
-
-
-
-impl AtemCommand {
-	pub fn id( &self ) -> AtemCommandId {
-		match self {
-			AtemCommand::Hello => AtemCommandId::Hello,
-			AtemCommand::Ack{ magic }   => AtemCommandId::Ack,
-		}
-	}
-}
-
-impl AtemResponse {
-	pub fn from_buffer( buffer: &[u8] ) -> Option< AtemResponse > {
-
-		if buffer.len() < 12 {
-			None
-		} else {
-			let h = buffer[ 0 ] >> 3;
-			let plen = ( ( ( ( buffer[ 0 ] & 0x03 ) as u16 ) << 8 ) | ( buffer[1] as u16 ) ) as usize;
-			let session_id = ( ( buffer[2] as u16 ) << 8 ) | ( buffer[3] as u16 );
-			let ack_id = ( ( buffer[4] as u16 ) << 8 ) | ( buffer[5] as u16 );
-			let remote_id = ( ( buffer[10] as u16 ) << 8 ) | ( buffer[11] as u16 );
-			if false && buffer.len() != plen {
-				println!("Expected length: {}/{:#04x} != {}/{:#04x} :Actual length", plen, plen, buffer.len(), buffer.len() );
-				None
-			} else {
-				if h & AtemCommandId::Hello as u8 != 0 {
-					println!("Got HELLO");
-					Some( AtemResponse::Hello {
-						session_id,
-						remote_id,
-					} )
-				} else {
-					println!("Unhandled command {:#02x}", h );
-					None
-				}
-			}
-		}
-	}	
-}
-
-#[derive(Debug,Copy,Clone,PartialEq)]
-pub enum CommandId {
-	AckRequest	= 0x01,	// Note: this is actually a bit mask, and may contain multiple in the header :(
-	Hello		= 0x02,
-	Resend		= 0x04,
-	Unknown		= 0x08,
-	Ack			= 0x10,
-/*
-	Command6	= 6,
-	Command13	= 13,
-	Command17	= 17,
-*/
-	Invalid		= 0xff,
-}
-
-impl Default for CommandId {
-	fn default() -> Self {
-		CommandId::Invalid
-	}
-}
-
-impl From<u8> for CommandId {
-	fn from( v: u8 ) -> CommandId {
-		match v {
-			0x01 => CommandId::AckRequest,
-			0x02 => CommandId::Hello,
-			0x10 => CommandId::Ack,
-/*
-			6 => CommandId::Command6,
-			13 => CommandId::Command13,
-			17 => CommandId::Command17,
-*/			
-			_ => CommandId::Invalid,
-		}
-	}
-}
-
-#[derive()]
-pub struct Command {
-	id:		CommandId,
-	buffer: [u8;1024],
-	len:	usize,
-}
-
-impl Default for Command {
-	fn default() -> Self {
-		Self {
-			id:		CommandId::default(),
-			buffer: [0;1024],
-			len:	0,
-		}
-	}
-}
-
-impl core::fmt::Debug for Command {
-	fn fmt( &self, f: &mut core::fmt::Formatter ) -> Result<(), std::fmt::Error > {
-		f.debug_struct("Command")
-            .field("id", &self.id)
-            .field("buffer", &format!( "{:?}", &self.buffer[..self.len]))
-            .field("len", &self.len)
-//            .field("addr", &format_args!("{}", self.addr))
-            .finish()
-
-	}
-}
-
-impl Command {
-	pub fn from_buffer( buffer: &[u8] ) -> Option< Command > {
-		if buffer.len() < 12 {
-			None
-		} else {
-			let h = buffer[ 0 ] >> 3;
-			let plen = ( ( ( ( buffer[ 0 ] & 0x03 ) as u16 ) << 8 ) | ( buffer[1] as u16 ) ) as usize;
-			let session_id = ( ( buffer[2] as u16 ) << 8 ) | ( buffer[3] as u16 );
-			let ack_id = ( ( buffer[4] as u16 ) << 8 ) | ( buffer[5] as u16 );
-			let remote_id = ( ( buffer[10] as u16 ) << 8 ) | ( buffer[11] as u16 );
-
-			let is_ack_request	= h & 0x01;
-			let is_hello		= h & 0x02;
-			let is_resend		= h & 0x04;
-			let is_ack			= h & 0x10;
-
-			if is_hello {
-
-			}
-			None
-			/*
-			if false && buffer.len() != plen {
-				println!("Expected length: {} != {} :Actual length", plen, buffer.len() );
-				None
-			} else {
-				match h.into() {
-					CommandId::AckRequest => {
-						println!("Got ACK_REQUEST");
-						Some( Self {
-							id:		h.into(),
-							buffer: [0;1024],
-							len:	20,
-	//						session_id,
-	//						remote_id,
-						} )
-					},
-					CommandId::Hello => {
-						println!("Got HELLO");
-						Some( Self {
-							id:			h.into(),
-							buffer: [0;1024],
-							len:	20,
-	//						session_id,
-	//						remote_id,
-						} )						
-					},
-					CommandId::Command6
-					| CommandId::Command13
-					| CommandId::Command17 => {
-						println!("Got unhandled, but known {}", h );
-						Some( Self {
-							id:			h.into(),
-							buffer: 	[0;1024],
-							len:		20,
-						} )
-					}
-					_ => {
-						println!("Got unhandled {}", h );
-						None
-					}
-				}
-			}
-			*/
-		}
-	}
-
-	pub fn id( &self ) -> CommandId {
-		self.id
-	}
-	pub fn buffer( &self ) -> &[u8] {
-		&self.buffer[..self.len]
-	}
-
-	fn update_header( &mut self ) {
-		let cmd_code = self.id as u8;
-
-		let hsb = ( self.len >> 8 ) as u8;
-		let lsb = ( self.len & 0xff ) as u8;
-		self.buffer[ 0 ] = ( cmd_code << 3 ) | ( hsb & 0x07 );
-		self.buffer[ 1 ] = lsb;
-
-		self.buffer[ 2 ] = 0; // session ID / uID
-		self.buffer[ 3 ] = 0;
-
-		self.buffer[ 4 ] = 0; // remote ID / ack ID
-		self.buffer[ 5 ] = 0;
-
-		self.buffer[ 10 ] = 0; // package ID
-		self.buffer[ 11 ] = 0;
-
-		if ![ CommandId::Hello as u8 ].contains( &cmd_code ) {
-
-		}
-	}
-
-	pub fn create_hello( ) -> Command {
-		let mut s = Self {
-			id: CommandId::Hello,
-			buffer: [0;1024],
-			len:	20,
-		};
-		s.buffer[  9 ] = 0x3a;
-		s.buffer[ 12 ] = 0x01;
-		s.update_header();
-
-		s
-	}
-}
-*/
