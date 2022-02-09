@@ -1,0 +1,17 @@
+[package]
+name = "bmda-bridge"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "bmda-bridge"
+path = "src/bmda_bridge_main.rs"
+
+[dependencies]
+anyhow = "1.0.53"
+
+[dependencies.tokio]
+version = "1.16.1"
+features = ["full"]
