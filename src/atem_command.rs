@@ -1,3 +1,4 @@
+use crate::payload::Payload;
 
 // hello
 // [16, 20, 0, 0, 0, 0, 0, 0, 0, 58, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
@@ -102,15 +103,15 @@ impl AtemCommandHeader {
 
 		self.buffer[ 2 ] = ( self.session_id >> 8 ) as u8;; // session ID / uID
 		self.buffer[ 3 ] = ( self.session_id & 0xff ) as u8;
-		println!("session {:#04x} -> {:#02x} {:#02x}", self.session_id, self.buffer[ 2 ], self.buffer[ 3 ]);
+//		println!("session {:#04x} -> {:#02x} {:#02x}", self.session_id, self.buffer[ 2 ], self.buffer[ 3 ]);
 
 		self.buffer[ 4 ] = ( self.ack_id >> 8 ) as u8;; // ack ID
 		self.buffer[ 5 ] = ( self.ack_id & 0xff ) as u8;
-		println!("ack {:#04x} -> {:#02x} {:#02x}", self.ack_id, self.buffer[ 4 ], self.buffer[ 5 ]);
+//		println!("ack {:#04x} -> {:#02x} {:#02x}", self.ack_id, self.buffer[ 4 ], self.buffer[ 5 ]);
 
 		self.buffer[ 10 ] = ( self.package_id >> 8 ) as u8;; // package ID 
 		self.buffer[ 11 ] = ( self.package_id & 0xff ) as u8;
-		println!("package {:#04x} -> {:#02x} {:#02x}", self.package_id, self.buffer[ 10 ], self.buffer[ 11 ]);
+//		println!("package {:#04x} -> {:#02x} {:#02x}", self.package_id, self.buffer[ 10 ], self.buffer[ 11 ]);
 
 		self.dirty = false;
 	}
@@ -123,19 +124,141 @@ impl AtemCommandHeader {
 	}
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug)]
 pub struct AtemCommandPayload {
-	buffer: Vec::<u8>,
+	payloads: Vec< Payload >, // read only for now
 	dirty:	bool,
+	buffer: Vec::<u8>,
 }
 
 impl Default for AtemCommandPayload {
 	fn default() -> Self {
 		Self {
-			buffer: Vec::new(),
+			payloads: Vec::new(),
 			dirty: 	false,
+			buffer: Vec::new(),
 		}
 	}
+}
+
+const IGNORED_CHUNKS: &'static[ &str ] = &[
+	"Time",
+	"CCdP",	// camera
+	"FTDC",	// finished transfer data
+	"_MeC", // mix effects
+	"_mpl",	// media pool
+	"_MvC",	// multi view (count?)
+	"_SSC",
+	"_FAC",
+	"_FEC",
+	"_FMH",
+	"_VMC",	// video modes?
+	"_DVE",
+	"Powr",	// power?
+	"AiVM",
+	"TcLK",
+	"TCCc",
+	"MvVM",
+	"MvPr",	// multi view "program"?
+	"MvIn",	// multi view input?
+	"VuMC",
+	"SaMw",
+	"VuMo",
+	"TrSS", // transition
+	"TrPr",
+	"TrPs",
+	"TMxP",
+	"TDpP",
+	"TWpP",
+	"TDvP",
+	"TStP",
+
+	"KeBP",	/// keyer!
+	"KBfT",
+	"KeLm",
+	"KACk",
+	"KACC",
+	"KePt",
+	"KeDV",
+	"KeFS",
+	"KKFP",
+
+	"DskB",
+	"DskP",
+	"FtbP",
+	"FtbS",
+
+	"MPfe", // media player
+	"MPCE",
+
+	"CapA",
+	"RXMS",
+	"RXCP",
+	"RXSS",
+	"RXCC",
+
+	"SSrc",
+	"SSBP",
+	"FMPP",
+	"FAIP",
+	"FIEP",
+	"AEBP",
+	"AIXP",
+	"AICP",
+	"AILP",
+	"FASP",
+	"FMTl",
+	"FAMP",
+	"AMBP",
+	"MOCP",
+	"AMLP",
+	"FMHP",
+	"FAMS",
+
+	"TlSr",	// tally state? !
+	"TlFc",
+
+	"MRPr",	// macro run?
+	"MRcS",	// macro recording?
+
+	"CCst",
+	"RMSu",
+	"RTMS",
+	"RTMR",
+	"RMRD",
+	"SRSU",
+	"STAB",
+	"StRS",
+	"SRST",
+	"SRSD",
+	"SRRS",
+	"SAth",
+	"SLow",
+	"NIfT",
+
+	"LKST",
+	"SRSS",
+
+
+];
+
+fn word_at( buffer: &[u8], index: usize ) -> u16 {
+	if index+1 >= buffer.len() {
+		println!("Tried to read past end of buffer");
+		0
+	} else {
+		( ( buffer[ index+0 ] as u16 ) << 8 ) | ( buffer[ index+1 ] as u16 )
+	}
+}
+
+fn string_at( buffer: &[u8], index: usize, len: Option< usize > ) -> String {
+	let b = if let Some( len ) = len {
+		&buffer[ index..index+len ]
+	} else {
+		&buffer[ index.. ]
+	};
+
+	String::from_utf8_lossy( b ).to_string()
 }
 
 impl AtemCommandPayload {
@@ -151,28 +274,76 @@ impl AtemCommandPayload {
 				o+10
 			};
 
-			println!("{:?}", &buffer[ o+0 .. l ] );
-		    let size = ( ( buffer[ o+0 ] as u16 ) << 8 ) | ( buffer[ o+1 ] as u16 );
+//			println!("{:?}", &buffer[ o+0 .. l ] );
+//		    let size = ( ( buffer[ o+0 ] as u16 ) << 8 ) | ( buffer[ o+1 ] as u16 );
+		    let size = word_at( &buffer, o );
 		    if size == 0 {
 		    	break;
 		    }
-		    println!("Chunk Size: {:#04x} from {:#02x} {:#02x} {} {}", size, buffer[ o+1 ], buffer[ o+0 ], buffer[ o+1 ], buffer[ o+0 ]);
+//		    println!("Chunk Size: {:#04x} from {:#02x} {:#02x} {} {}", size, buffer[ o+1 ], buffer[ o+0 ], buffer[ o+1 ], buffer[ o+0 ]);
 
 		    let s = o+2;
 		    let e = s+( size as usize )-2;
 		    let chunk = &buffer[ o+2..e ];
-		    println!("Chunk: {:?}", &chunk );
+//		    println!("Chunk: {:?}", &chunk );
 		    let mut name = [0;4];
 		    name[ 0 ] = chunk[ 0 + 2 ];
 		    name[ 1 ] = chunk[ 1 + 2 ];
 		    name[ 2 ] = chunk[ 2 + 2 ];
 		    name[ 3 ] = chunk[ 3 + 2 ];
-		    println!("{:?}", &name);
+//		    println!("{:?}", &name);
 
 		    let name = String::from_utf8_lossy( &name );
-		    println!("{:?}", &name);
+//		    println!("{:?}", &name);
 
 		    match name.as_ref() {
+		    	"InCm" => {
+		    		println!("InCm: {:?}", &chunk);
+		    	},
+		    	"_ver" => {
+		    		let maj = word_at( &buffer, 6 );
+		    		let min = word_at( &buffer, 8 );
+		    		println!("Got version {}.{}", maj, min);
+		    	},
+		    	"_pin" => {
+		    		let pin = string_at( &chunk, 6, None );
+		    		println!("Got pin >{}<", pin);
+		    	}
+		    	"_top" => {
+		    		let me_count		= chunk[ 6 ];
+		    		let source_count	= chunk[ 7 ];
+		    		let colgen_count	= chunk[ 8 ];
+		    		let auxbus_count	= chunk[ 9 ];
+		    		// 10?
+		    		let dsk_count		= chunk[ 11 ];
+		    		// 12?
+		    		let usk_count		= chunk[ 13 ];
+		    		let stinger_count	= chunk[ 14 ];
+		    		let dve_count		= chunk[ 15 ];
+		    		let ss_count		= chunk[ 16 ];
+		    		let sd				= chunk[ 17 ];
+		    		println!("Got Topology");
+		    	}
+		    	"_TlC" => {
+		    		let c = word_at( &chunk, 6 );
+		    		println!("Tally Channel Count: {}", c);
+		    	}
+		    	"AuxS" => {
+		    		println!("Got Auxiliary Source");
+		    		let i = chunk[ 6 ];
+		    		let v = word_at( &buffer, 8 );
+		    		println!("{} -> {}", i, v );
+		    	},
+		    	"DskS" => {
+		    		println!("Got Downstream Keyer");
+		    		let i = chunk[ 6 ];
+		    		let on = chunk[ 7 ];
+		    		let trans = chunk[ 8 ];
+		    		let auto_trans = chunk[ 9 ];
+		    		let frame = chunk[ 9 ];
+		    		let v = word_at( &buffer, 8 );
+		    		println!("{} -> {} ({}/{}/{})", i, on, trans, auto_trans, v );
+		    	},
 		    	"TlIn" => {
 		    		println!("Got Tally Info");
 		    		let count = ( ( ( chunk[ 6 ] as u16 ) <<8 ) | ( chunk[ 7 ] as u16 ) ) as usize;
@@ -182,15 +353,92 @@ impl AtemCommandPayload {
 		    			println!("{} -> {}", i, t );
 		    		}
 		    	},
+		    	"InPr" => {
+		    		let i = word_at( &chunk, 6 );
+		    		let lt = string_at( &chunk,  8, Some( 20 ) );
+		    		let st = string_at( &chunk, 28, Some( 4 ) );
+		    		let et = chunk[ 37 ];
+		    		let it = chunk[ 38 ];
+		    		let avail = chunk[ 40 ];
+		    		let mea = chunk[ 41 ];
+
+		    		println!("Input: {:>8} {:<4} | {:<20}", i, st, lt);
+		    	},
+		    	"PrgI" => {
+		    		let me = chunk[ 6 ];
+		    		let input = word_at( &chunk, 8 );
+		    		println!("Program Input: {} -> {}", me, input);
+		    	},
+		    	"PrvI" => {
+		    		let me = chunk[ 6 ];
+		    		let input = word_at( &chunk, 8 );
+		    		println!("Preview Input: {} -> {}", me, input);
+		    	},
 		    	"KeOn" => {
 		    		let w = chunk[ 6 ];
 		    		let i = chunk[ 7 ];
-		    		let o = chunk[ 8 ];
+		    		let s = chunk[ 8 ];
 
-		    		println!("KeOn {} {} {}", w, i, o );
+		    		println!("KeOn {} {} {}", w, i, s );
+		    		p.payloads.push( Payload::KeOn{
+		    			who: w,
+		    			index: i,
+		    			state: s,
+		    		});
+		    	}
+		    	"_MAC" => {
+		    		let c = chunk[ 6 ];
+		    		println!("Got Macro Count: {}", c );
+		    	},
+		    	"MPrp" => {
+		    		// macro?
+					let i = chunk[ 7 ];
+					let u = chunk[ 8 ];
+					let name_len = ( ( ( chunk[ 10 ] as u16 ) <<8 ) | ( chunk[ 11 ] as u16 ) ) as usize;
+					let body_len = ( ( ( chunk[ 12 ] as u16 ) <<8 ) | ( chunk[ 13 ] as u16 ) ) as usize;
+
+					let name = if name_len > 0 {
+						let n = &chunk[ 14..14+name_len ];
+						String::from_utf8_lossy( &n )
+					} else {
+						String::from_utf8_lossy( &[] )
+					};
+					let body = if body_len > 0 {
+						let b = &chunk[ 14+name_len..14+name_len+body_len ];
+						String::from_utf8_lossy( &b )
+					} else {
+						String::from_utf8_lossy( &[] )
+					};
+					if u > 0 {
+						println!("Macro: {}\n{}", name, body);
+					}
+		    	},
+		    	"VidM" => {
+		    		let m = chunk[ 6 ];
+		    		let n = match m {
+		    			27 => "1080p60".to_string(),
+		    			o => format!("unknown {}", o ),
+		    		};
+		    		println!("Video Mode: {} -> {}", m, n );
+		    	},
+		    	"ColV" => {
+		    		let i = chunk[ 6 ];
+		    		let h = word_at( &chunk, 8 );
+		    		let s = word_at( &chunk, 10 );
+		    		let l = word_at( &chunk, 12 );
+
+		    		let h = ( h as f32 ) / 10.0;
+		    		let s = ( s as f32 ) / 1000.0;
+		    		let l = ( l as f32 ) / 1000.0;
+
+		    		println!("Col Gen: {} -> {}/{}/{}", i, h, s, l);
 		    	}
 		    	o => {
-		    		println!("Unhandled chunk type: {:?}", o );
+		    		if IGNORED_CHUNKS.contains( &o ) {
+
+		    		} else {
+		    			println!("Unhandled chunk type: {:?}", o );
+		    		}
 		    	}
 		    }
 			o+=size as usize;
@@ -221,7 +469,7 @@ impl AtemCommandPayload {
 	}
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug)]
 pub struct AtemCommand {
 	header:		AtemCommandHeader,
 	payload:	AtemCommandPayload,
@@ -277,7 +525,7 @@ impl AtemCommand {
 						}
 						Some( ac )
 					} else if h.is_ack_request() {
-						println!("Got ACK_REQUEST. Length {}", plen);
+//						println!("Got ACK_REQUEST. Length {}", plen);
 						let mut ac = AtemCommand::default();
 						ac.header = h;
 						if let Some( p ) = p {
@@ -347,7 +595,7 @@ impl AtemCommand {
 
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug)]
 pub enum Command {
 	Hello,
 	Ack( u16, u16 ),

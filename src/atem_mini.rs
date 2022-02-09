@@ -78,7 +78,7 @@ impl AtemMini {
 				let r = rng.gen_range(0..100);
 				format!("0.0.0.0:{}", 55555+r)
 			};
-			
+
 			let socket = UdpSocket::bind(&local_addr).await?;
 			let remote_addr = REMOTE_ADDR;
 			match socket.connect(remote_addr).await {
@@ -103,19 +103,19 @@ impl AtemMini {
 								println!("Sending Hello");
 								let c = AtemCommand::create_hello();
 								let buf = c.buffer();
-								println!("{:?}", &buf[..20]);
+//								println!("{:?}", &buf[..20]);
 								let len = socket.send(&buf[..20]).await?;
-								println!("{:?} bytes sent", len);
+//								println!("{:?} bytes sent", len);
 							},
 							Command::Ack( session_id, remote_id ) => {
 								let package_id = connection.package_id;
 								connection.package_id += 1;
-								println!("Sending Ack for session {}, remote {}", session_id, remote_id);
+//								println!("Sending Ack for session {}, remote {}", session_id, remote_id);
 								let c = AtemCommand::create_ack( package_id, session_id, remote_id );
 								let buf = c.buffer();
-								println!("{:?}", &buf[..12]);
+//								println!("{:?}", &buf[..12]);
 								let len = socket.send(&buf[..12]).await?;
-								println!("{:?} bytes sent", len);
+//								println!("{:?} bytes sent", len);
 							},
 							Command::Shutdown => {
 								return Ok(());
@@ -138,7 +138,7 @@ impl AtemMini {
 				match socket.try_recv(&mut buf) {
 					Ok(n) => {
 						if let Some( cmd ) = AtemCommand::from_buffer( &buf[..n] ) {
-							println!("Response: {:?}", &cmd);
+//							println!("Response: {:?}", &cmd);
 							response_tx.send( cmd );
 						} else {
 							println!("Unhandled {:?}", &buf[..n]);
@@ -194,7 +194,7 @@ impl AtemMini {
 						if c.header().is_hello() {
 							println!("Got HELLO ... {}", c.header().session_id());
 							if c.header().is_ack_request() {
-								println!("ACK REQUEST!");
+//								println!("ACK REQUEST!");
 							}
 							if let Some( tx ) = &mut self.request_tx {
 								let cmd = Command::Ack( c.header().session_id(), 0 );
@@ -204,7 +204,7 @@ impl AtemMini {
 								}
 							}
 						} else if c.header().is_ack_request() {
-							println!("ACK REQUEST! for {}", c.header().package_id());
+//							println!("ACK REQUEST! for {}", c.header().package_id());
 							// :TODO: handle payload
 							if let Some( tx ) = &mut self.request_tx {
 								let cmd = Command::Ack( c.header().session_id(), c.header().package_id() );
