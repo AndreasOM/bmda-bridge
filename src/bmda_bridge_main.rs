@@ -7,7 +7,7 @@ async fn main() -> anyhow::Result<()> {
 	am.connect()?;
 
 	while am.is_connected() {
-		std::thread::sleep(std::time::Duration::from_millis( 1000 ) );
+		std::thread::sleep(std::time::Duration::from_millis( 1 ) );
 //		println!(".");
 		am.update();	// :HACK:
 	};

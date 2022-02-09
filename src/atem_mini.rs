@@ -1,3 +1,4 @@
+use rand::Rng;
 
 use std::sync::{
 	mpsc::{
@@ -8,9 +9,9 @@ use std::sync::{
 
 use crate::atem_command::{
 	AtemCommand,
-	AtemResponse,
+//	AtemResponse,
 	Command,
-	CommandId,
+//	CommandId,
 };
 
 use tokio::net::UdpSocket;
@@ -25,6 +26,7 @@ struct Connection {
 	sessionId:	u16,
 	localId:	u16,
 	remoteId:	u16,
+	package_id: u16,
 }
 
 impl Connection {
@@ -44,36 +46,12 @@ impl Connection {
 	pub fn remoteId( &self ) -> u16 {
 		self.remoteId
 	}
-
-	fn createHeader( &mut self, cmd: AtemCommand, len: u16, remoteId: u16 ) -> [u8; PACKET_BUFFER_SIZE] {
-		let cmd_code = cmd.id() as u8;
-		let mut buf =[0; PACKET_BUFFER_SIZE];
-
-		let hsb = ( len >> 8 ) as u8;
-		let lsb = ( len & 0xff ) as u8;
-		buf[ 0 ] = ( cmd_code << 3 ) | ( hsb & 0x07 );
-		buf[ 1 ] = lsb;
-
-		buf[ 2 ] = 0; // session ID / uID
-		buf[ 3 ] = 0;
-
-		buf[ 4 ] = 0; // remote ID / ack ID
-		buf[ 5 ] = 0;
-
-		buf[ 10 ] = 0; // package ID
-		buf[ 11 ] = 0;
-
-		if ![ AtemCommand::Hello ].contains( &cmd ) {
-
-		}
-		buf
-	}
-
 }
 
 pub struct AtemMini {
-	request_tx: Option< mpsc::Sender< AtemCommand > >,
-	response_rx: Option< mpsc::Receiver< Command > >,
+	request_tx: Option< mpsc::Sender< Command > >,
+	response_rx: Option< mpsc::Receiver< AtemCommand > >,
+	initial_payload_received: bool,
 }
 
 impl AtemMini {
@@ -81,6 +59,7 @@ impl AtemMini {
 		Self {
 			request_tx: None,
 			response_rx: None,
+			initial_payload_received: false,
 		}
 	}
 
@@ -94,7 +73,13 @@ impl AtemMini {
 		let handle: tokio::task::JoinHandle<anyhow::Result<()>> = tokio::spawn(async move{
 			let mut connection = Connection::default();
 
-			let socket = UdpSocket::bind("0.0.0.0:55555").await?;
+			let local_addr = {
+				let mut rng = rand::thread_rng();
+				let r = rng.gen_range(0..100);
+				format!("0.0.0.0:{}", 55555+r)
+			};
+			
+			let socket = UdpSocket::bind(&local_addr).await?;
 			let remote_addr = REMOTE_ADDR;
 			match socket.connect(remote_addr).await {
 				Ok( _ ) => {
@@ -114,28 +99,29 @@ impl AtemMini {
 				match r {
 					Ok( cmd ) => {
 						match cmd {
-							AtemCommand::Hello => {
+							Command::Hello => {
 								println!("Sending Hello");
-								let c = Command::create_hello();
+								let c = AtemCommand::create_hello();
 								let buf = c.buffer();
-
-//								let mut buf = connection.createHeader( AtemCommand::Hello, 20, 0 );
-//								buf[  9 ] = 0x3a;
-//								buf[ 12 ] = 0x01;
 								println!("{:?}", &buf[..20]);
-
 								let len = socket.send(&buf[..20]).await?;
 								println!("{:?} bytes sent", len);
 							},
-							AtemCommand::Ack{ magic } => {
-								println!("Sending Ack");
-								let mut buf = connection.createHeader( cmd, 12, 0 );
-								buf[  9 ] = 0x03;
+							Command::Ack( session_id, remote_id ) => {
+								let package_id = connection.package_id;
+								connection.package_id += 1;
+								println!("Sending Ack for session {}, remote {}", session_id, remote_id);
+								let c = AtemCommand::create_ack( package_id, session_id, remote_id );
+								let buf = c.buffer();
 								println!("{:?}", &buf[..12]);
-
 								let len = socket.send(&buf[..12]).await?;
 								println!("{:?} bytes sent", len);
-
+							},
+							Command::Shutdown => {
+								return Ok(());
+							}
+							Command::AtemCommand( ac ) => {
+								println!("Sending AtemCommand");
 							},
 						}
 					},
@@ -151,7 +137,7 @@ impl AtemMini {
 				let mut buf = [0;65535]; //[0;1024];
 				match socket.try_recv(&mut buf) {
 					Ok(n) => {
-						if let Some( cmd ) = Command::from_buffer( &buf[..n] ) {
+						if let Some( cmd ) = AtemCommand::from_buffer( &buf[..n] ) {
 							println!("Response: {:?}", &cmd);
 							response_tx.send( cmd );
 						} else {
@@ -169,7 +155,7 @@ impl AtemMini {
 				}
 //				println!("!");
 //				tokio::task::yield_now().await;
-				std::thread::sleep(std::time::Duration::from_millis( 100 ) );
+				std::thread::sleep(std::time::Duration::from_millis( 10 ) );
 
 			}
 			println!("???");
@@ -181,7 +167,7 @@ impl AtemMini {
 	pub fn connect( &mut self ) -> anyhow::Result<()> {
 		self.run_handler();
 		if let Some( tx ) = &mut self.request_tx {
-			let cmd = AtemCommand::Hello;
+			let cmd = Command::Hello;
 			tx.send(cmd)?;
 		}
 
@@ -198,30 +184,46 @@ impl AtemMini {
 			for _i in 0..max_responses {
 				let r = response_rx.try_recv();
 				match r {
-					Ok( r ) => {
-//						dbg!(&r);
-						match r.id() {
-							CommandId::AckRequest => {
-								let cmd = AtemCommand::Ack{ magic: 0x09 };
-								if let Some( request_tx ) = &mut self.request_tx {
-									request_tx.send( cmd );
+					Ok( c ) => {
+						if !self.initial_payload_received {
+							if c.header().len() == 0 {
+								println!("Initial payload transfered");
+								self.initial_payload_received = true;
+							}
+						}
+						if c.header().is_hello() {
+							println!("Got HELLO ... {}", c.header().session_id());
+							if c.header().is_ack_request() {
+								println!("ACK REQUEST!");
+							}
+							if let Some( tx ) = &mut self.request_tx {
+								let cmd = Command::Ack( c.header().session_id(), 0 );
+								match tx.send(cmd) {
+									Ok( _ ) => {},
+									Err( _ ) => {},
 								}
 							}
-							CommandId::Hello => {
-								let cmd = AtemCommand::Ack{ magic: 0x09 };
-								if let Some( request_tx ) = &mut self.request_tx {
-									request_tx.send( cmd );
+						} else if c.header().is_ack_request() {
+							println!("ACK REQUEST! for {}", c.header().package_id());
+							// :TODO: handle payload
+							if let Some( tx ) = &mut self.request_tx {
+								let cmd = Command::Ack( c.header().session_id(), c.header().package_id() );
+								match tx.send(cmd) {
+									Ok( _ ) => {},
+									Err( _ ) => {},
 								}
-							},
-							/*
-							CommandId::Command6 => {
-								println!("Ignored command {:?}", &r );
-							},
-							*/
-							c => {
-								println!("Unhandled command {:?}", &c );
-								panic!("Unhandled command");
-							},
+							}
+						} else {
+							if let Some( tx ) = &mut self.request_tx {
+								let cmd = Command::Shutdown;
+								match tx.send(cmd) {
+									Ok( _ ) => {},
+									Err( _ ) => {},
+								}
+							}
+							dbg!(&c);
+							dbg!(&c.header());
+							todo!("...");							
 						}
 					},
 					Err( mpsc::TryRecvError::Empty ) => {
